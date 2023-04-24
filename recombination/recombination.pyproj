@@ -1,0 +1,68 @@
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>593c73ce-67cd-4027-8852-515c3851a195</ProjectGuid>
+    <ProjectHome>.</ProjectHome>
+    <StartupFile>morgan.py</StartupFile>
+    <SearchPath>
+    </SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <Name>recombination</Name>
+    <RootNamespace>recombination</RootNamespace>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="copenhaver.py" />
+    <Compile Include="morgan.py" />
+    <Compile Include="recombination.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="datasets\anderson.txt" />
+    <Content Include="datasets\beadle.txt" />
+    <Content Include="datasets\blank.txt" />
+    <Content Include="datasets\bole-gowda.txt" />
+    <Content Include="datasets\copenhaver1.txt" />
+    <Content Include="datasets\copenhaver2.txt" />
+    <Content Include="datasets\copenhaver3.txt" />
+    <Content Include="datasets\copenhaver4.txt" />
+    <Content Include="datasets\copenhaver5.txt" />
+    <Content Include="datasets\graubard_control25.txt" />
+    <Content Include="datasets\morgan.txt" />
+    <Content Include="datasets\perkins.txt" />
+    <Content Include="datasets\roberts165.txt" />
+    <Content Include="datasets\Roberts190_unbalanced.txt" />
+    <Content Include="datasets\roberts269.txt" />
+    <Content Include="datasets\roberts_control.txt" />
+    <Content Include="datasets\strickland1.txt" />
+    <Content Include="datasets\strickland1958_cross1.txt" />
+    <Content Include="datasets\strickland1958_cross2.txt" />
+    <Content Include="datasets\strickland1958_cross3.txt" />
+    <Content Include="datasets\sturtevant_sc4_unbalanced.txt" />
+    <Content Include="datasets\sturtevant_sc8_unbalanced.txt" />
+    <Content Include="datasets\weinstein.txt" />
+    <Content Include="results\copenhaver3_results.txt" />
+    <Content Include="results\morgan_results.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="datasets\" />
+    <Folder Include="results\" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+  <!-- Uncomment the CoreCompile target to enable the Build command in
+       Visual Studio and specify your pre- and post-build commands in
+       the BeforeBuild and AfterBuild targets below. -->
+  <!--<Target Name="CoreCompile" />-->
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+</Project>
