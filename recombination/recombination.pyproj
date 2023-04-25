@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>593c73ce-67cd-4027-8852-515c3851a195</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>morgan.py</StartupFile>
+    <StartupFile>paracentric_linear_inversion.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -23,7 +23,9 @@
   <ItemGroup>
     <Compile Include="copenhaver.py" />
     <Compile Include="morgan.py" />
+    <Compile Include="paracentric_linear_inversion.py" />
     <Compile Include="recombination.py" />
+    <Compile Include="standard_inversion.py" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="datasets\anderson.txt" />

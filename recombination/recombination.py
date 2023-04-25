@@ -78,7 +78,7 @@ def generate_pi_vector(gamma_values):
 @jit("f8[:,:](u8, u8, f8, f8, f8[:], f8[:,:])",nopython=True)
 def numba_generate_D(m, x, lambda_value, mu_value, gamma_values, g_values):
 	'''
-	Generates and returns a single D(x) matrix as defined in the thesis.
+	Generates and returns a single D(x) matrix as defined in the paper.
 		
 	Arguments:
 	x: (int) the number of chiasma events
@@ -154,6 +154,19 @@ class CoincidencePlot:
 			return (p/gamma_sum)/(1-p)
 
 class Investigation:
+	"""
+	A class for performing maximum likelihood parameter estimations on recombination and tetrad data.
+	Key attributes:
+	model (string): Which parametrization to use. You can choose between the following:
+		'free': runs the analysis with the gamma, mix3, mix7, mix15 or mix31 models, depending on the number given number of interference_parameters
+		'negative': the gamma + gamma_0 model
+		'map': estimates only the genetic lengths of the interval
+	interference_parameters (int): The number of interference parameters (1, 3, 7, 15 or 31)
+	extra_pathway (bool): Whether or not to include an additional non-interfering pathway (+ mu)
+	tetrad (bool): True if the input data is for a tetrad
+	linear_meiosis (bool): True  if the input data is for a heterokaryotype with linear meiosis
+
+	"""
 	def __init__(self, loci, model = "free", gamma_values = None, lambda_values = None, h = None, p = None, extra_pathway = False, start_at_gamma = 0, include_breakpoint_loci = False, output_file = None, alpha = 0, beta = 1, linear_meiosis = False, include_centromere = False, include_patterns_in_report = True, d_values = None, interference_direction = "original", tetrad = False, distances = False, error1 = 10e-12, error2 = 10e-11, error3 = 1e-12, min_x = 2, max_x = 20, benchmark = 0, plot_span = 1, plot_resolution = 1000, plot_name = None, plot_marker = None, figure_name = None, figure_header = None, coincidence4_interval_size = 0.001, interference_bounds = 10, interference_parameters = 1, closed_form = False, seed = None):
 		self.chromosome = None
 		self.error1 = error1
@@ -235,24 +248,12 @@ class Investigation:
 			self.d_values = "["
 		if(model == "map"):
 			self.parameters = self.intervals_n
-		elif(model == "mix2"):
-			self.parameters = self.intervals_n + 1
-		elif(model == "mix4"):
-			self.parameters  = self.intervals_n + 3
-		elif(model == "mix8"):
-			self.parameters = self.intervals_n + 7
-		elif(model == "mix16"):
-			self.parameters = self.intervals_n + 15
-		elif(model == "mix32"):
-			self.parameters = self.intervals_n + 31
 		elif(model == "negative"):
 			self.parameters = self.intervals_n + 2
-		elif(model == "d"):
-			self.parameters = self.intervals_n
 		elif(model == "free"):
 			self.parameters = self.intervals_n + self.interference_parameters_n
 		elif(model != 'coincidence' and model != 'plot_distances' and model != "free" and model != 'sterility'):
-			print("Error! There's no model called " + model + ". Please choose between 'map', 'mix2', 'mix4', 'mix8', 'mix16', 'negative', 'coincidence', 'sterility' and 'plot_distances'")
+			print("Error! There's no model called " + model + ". Please choose between 'map', 'free', 'negative', and 'coincidence'")
 			sys.exit(1)
 		if(extra_pathway):
 			self.parameters += 1
@@ -675,177 +676,6 @@ class Investigation:
 		self.data = numpy.array(self.data)
 		self.n = sum(self.data)
 
-	def read_input_distances(self, path):
-		self.input_file = path
-		self.tetrad_distances = []
-		input_file = open(path)
-		for line in input_file:
-			line.strip()
-			distances = line.split("\t")
-			distances = list(map(float, distances))
-			self.tetrad_distances.append(distances)
-		input_file.close()
-
-
-	def distances_minus_log_likelihood(self, parameters, gamma_values = None):
-		if gamma_values == None:
-			gamma_values = self.get_gamma_values_distances(parameters)
-		if self.extra_pathway:
-			p = parameters[-1]
-			self.p = p
-		else:
-			p = 0
-			self.p = 0
-		self.gamma_values = gamma_values
-		self.h = self.calculate_h(p, gamma_values)
-		self.pi_vector = generate_pi_vector(gamma_values)
-		s = 0
-		for tetrad in self.tetrad_distances:
-			s += self.tetrad_log_likelihood_test(tetrad)
-		self.counter += 1
-		#print(parameters)
-		#print(chromosome.likelihood)
-		if self.verbose and self.counter % self.report_frequency == 0:
-			print(parameters)
-			print(s)
-		return -s
-
-	#def get_gamma_values_distances(self, parameters):
-	#	self.intervals_n = 0
-	#	if self.model == "map":
-	#		gamma_values = self.input_gamma_values
-	#	if self.model == "mix2":
-	#		a = parameters[0]
-	#		gamma_values =  [0 for i in range(self.start_at_gamma)]
-	#		gamma_values.append(a)
-	#		gamma_values.append(1-a)
-	#	elif self.model == "mix4":
-	#		a = parameters[self.intervals_n]
-	#		b = parameters[self.intervals_n + 1]
-	#		c = parameters[self.intervals_n + 2]
-	#		gamma_values = [0 for i in range(self.start_at_gamma)]
-	#		gamma_values.append(a*b)
-	#		gamma_values.append(a*(1-b))
-	#		gamma_values.append((1-a)*c)
-	#		gamma_values.append((1-a)*(1-c))
-	#	elif self.model == "mix8":
-	#		a = parameters[self.intervals_n]
-	#		b = parameters[self.intervals_n + 1]
-	#		c = parameters[self.intervals_n + 2]
-	#		d = parameters[self.intervals_n + 3]
-	#		e = parameters[self.intervals_n + 4]
-	#		f = parameters[self.intervals_n + 5]
-	#		g = parameters[self.intervals_n + 6]
-	#		gamma_values = [0 for i in range(self.start_at_gamma)]
-	#		gamma_values.append(a*b*c)
-	#		gamma_values.append(a*b*(1-c))
-	#		gamma_values.append(a*(1-b)*d)
-	#		gamma_values.append(a*(1-b)*(1-d))
-	#		gamma_values.append((1-a)*e*f)
-	#		gamma_values.append((1-a)*e*(1-f))
-	#		gamma_values.append((1-a)*(1-e)*g)
-	#		gamma_values.append((1-a)*(1-e)*(1-g))
-	#	elif self.model == "mix16":
-	#		a = parameters[self.intervals_n]
-	#		b = parameters[self.intervals_n + 1]
-	#		c = parameters[self.intervals_n + 2]
-	#		d = parameters[self.intervals_n + 3]
-	#		e = parameters[self.intervals_n + 4]
-	#		f = parameters[self.intervals_n + 5]
-	#		g = parameters[self.intervals_n + 6]
-	#		h = parameters[self.intervals_n + 7]
-	#		i = parameters[self.intervals_n + 8]
-	#		j = parameters[self.intervals_n + 9]
-	#		k = parameters[self.intervals_n + 10]
-	#		l = parameters[self.intervals_n + 11]
-	#		m = parameters[self.intervals_n + 12]
-	#		n = parameters[self.intervals_n + 13]
-	#		o = parameters[self.intervals_n + 14]
-	#		lambda_values = parameters[:self.intervals_n]
-	#		gamma_values = [0 for i in range(self.start_at_gamma)]
-	#		gamma_values.append(a*b*c*d)
-	#		gamma_values.append(a*b*c*(1-d))
-	#		gamma_values.append(a*b*(1-c)*e)
-	#		gamma_values.append(a*b*(1-c)*(1-e))
-	#		gamma_values.append(a*(1-b)*f*g)
-	#		gamma_values.append(a*(1-b)*f*(1-g))
-	#		gamma_values.append(a*(1-b)*(1-f)*h)
-	#		gamma_values.append(a*(1-b)*(1-f)*(1-h))
-	#		gamma_values.append((1-a)*i*j*k)
-	#		gamma_values.append((1-a)*i*j*(1-k))
-	#		gamma_values.append((1-a)*i*(1-j)*l)
-	#		gamma_values.append((1-a)*i*(1-j)*(1-l))
-	#		gamma_values.append((1-a)*(1-i)*m*n)
-	#		gamma_values.append((1-a)*(1-i)*m*(1-n))
-	#		gamma_values.append((1-a)*(1-i)*(1-m)*o)
-	#		gamma_values.append((1-a)*(1-i)*(1-m)*(1-o))
-	#	elif self.model == "mix32":
-	#		a = parameters[self.intervals_n]
-	#		b = parameters[self.intervals_n + 1]
-	#		c = parameters[self.intervals_n + 2]
-	#		d = parameters[self.intervals_n + 3]
-	#		e = parameters[self.intervals_n + 4]
-	#		f = parameters[self.intervals_n + 5]
-	#		g = parameters[self.intervals_n + 6]
-	#		h = parameters[self.intervals_n + 7]
-	#		i = parameters[self.intervals_n + 8]
-	#		j = parameters[self.intervals_n + 9]
-	#		k = parameters[self.intervals_n + 10]
-	#		l = parameters[self.intervals_n + 11]
-	#		m = parameters[self.intervals_n + 12]
-	#		n = parameters[self.intervals_n + 13]
-	#		o = parameters[self.intervals_n + 14]
-	#		p = parameters[self.intervals_n + 15]
-	#		q = parameters[self.intervals_n + 16]
-	#		r = parameters[self.intervals_n + 17]
-	#		s = parameters[self.intervals_n + 18]
-	#		t = parameters[self.intervals_n + 19]
-	#		u = parameters[self.intervals_n + 20]
-	#		v = parameters[self.intervals_n + 21]
-	#		w = parameters[self.intervals_n + 22]
-	#		x = parameters[self.intervals_n + 23]
-	#		y = parameters[self.intervals_n + 24]
-	#		z = parameters[self.intervals_n + 25]
-	#		A = parameters[self.intervals_n + 26]
-	#		B = parameters[self.intervals_n + 27]
-	#		C = parameters[self.intervals_n + 28]
-	#		D = parameters[self.intervals_n + 29]
-	#		E = parameters[self.intervals_n + 30]
-	#		lambda_values = parameters[:self.intervals_n]
-	#		gamma_values = [0 for i in range(self.start_at_gamma)]
-	#		gamma_values.append(a*b*c*d*p)
-	#		gamma_values.append(a*b*c*d*(1-p))
-	#		gamma_values.append(a*b*c*(1-d)*q)
-	#		gamma_values.append(a*b*c*(1-d)*(1-q))
-	#		gamma_values.append(a*b*(1-c)*e*r)
-	#		gamma_values.append(a*b*(1-c)*e*(1-r))
-	#		gamma_values.append(a*b*(1-c)*(1-e)*s)
-	#		gamma_values.append(a*b*(1-c)*(1-e)*(1-s))
-	#		gamma_values.append(a*(1-b)*f*g*t)
-	#		gamma_values.append(a*(1-b)*f*g*(1-t))
-	#		gamma_values.append(a*(1-b)*f*(1-g)*u)
-	#		gamma_values.append(a*(1-b)*f*(1-g)*(1-u))
-	#		gamma_values.append(a*(1-b)*(1-f)*h*v)
-	#		gamma_values.append(a*(1-b)*(1-f)*h*(1-v))
-	#		gamma_values.append(a*(1-b)*(1-f)*(1-h)*w)
-	#		gamma_values.append(a*(1-b)*(1-f)*(1-h)*(1-w))
-	#		gamma_values.append((1-a)*i*j*k*x)
-	#		gamma_values.append((1-a)*i*j*k*(1-x))
-	#		gamma_values.append((1-a)*i*j*(1-k)*y)
-	#		gamma_values.append((1-a)*i*j*(1-k)*(1-y))
-	#		gamma_values.append((1-a)*i*(1-j)*l*z)
-	#		gamma_values.append((1-a)*i*(1-j)*l*(1-z))
-	#		gamma_values.append((1-a)*i*(1-j)*(1-l)*A)
-	#		gamma_values.append((1-a)*i*(1-j)*(1-l)*(1-A))
-	#		gamma_values.append((1-a)*(1-i)*m*n*B)
-	#		gamma_values.append((1-a)*(1-i)*m*n*(1-B))
-	#		gamma_values.append((1-a)*(1-i)*m*(1-n)*C)
-	#		gamma_values.append((1-a)*(1-i)*m*(1-n)*(1-C))
-	#		gamma_values.append((1-a)*(1-i)*(1-m)*o*D)
-	#		gamma_values.append((1-a)*(1-i)*(1-m)*o*(1-D))
-	#		gamma_values.append((1-a)*(1-i)*(1-m)*(1-o)*E)
-	#		gamma_values.append((1-a)*(1-i)*(1-m)*(1-o)*(1-E))
-	#	return gamma_values
 
 	def tetrad_log_likelihood_test(self, tetrad):
 		y = len(tetrad)
@@ -1032,89 +862,6 @@ class Investigation:
 	
 	def add_calculator(self, calculator):
 		self.calculator = calculator
-
-	#def run_nelder_mead_distance(self, verbose = True, repeat = 1):
-	#	bounds = ()
-	#	parameters = []
-	#	self.verbose = verbose
-	#	self.repetition = 0
-	#	for i in range(repeat):
-	#		self.repetition += 1
-	#		if self.model == "mix2":
-	#			bounds = bounds + ((0,self.interference_bounds),)
-	#			parameters.append(random.uniform(0,5))
-	#		elif self.model == "mix4":
-	#			bounds = bounds + ((0,self.interference_bounds-2),(0,1),(0,1),)
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#		elif self.model == "mix8":
-	#			bounds = bounds + ((0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1),)
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#		elif self.model == "mix16":
-	#			bounds = bounds + ((0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1),)
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#		elif self.model == "mix32":
-	#			bounds = bounds + ((0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1),(0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1), (0,1),)
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#			parameters.append(random.uniform(0,1))
-	#		if self.extra_pathway:
-	#			bounds = bounds + ((0,1000),)
-	#			parameters.append(random.uniform(0,1))
-
-	#		result = minimize(self.distances_minus_log_likelihood, parameters, bounds = bounds, method = "Nelder-Mead")
-	#		solution = result['x']
-	#		evaluation = - self.distances_minus_log_likelihood(solution)
-	#		self.finalize_distances(solution, evaluation)
 
 
 	def run_nelder_mead(self, repeat = 1, verbose = True, report_frequency = 100):
