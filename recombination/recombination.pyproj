@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>593c73ce-67cd-4027-8852-515c3851a195</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>paracentric_linear_inversion.py</StartupFile>
+    <StartupFile>standard_inversion.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -51,8 +51,6 @@
     <Content Include="datasets\sturtevant_sc4_unbalanced.txt" />
     <Content Include="datasets\sturtevant_sc8_unbalanced.txt" />
     <Content Include="datasets\weinstein.txt" />
-    <Content Include="results\copenhaver3_results.txt" />
-    <Content Include="results\morgan_results.txt" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="datasets\" />
