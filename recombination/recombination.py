@@ -25,22 +25,6 @@ import matplotlib.pyplot as pt
 from scipy.stats import gamma
 from scipy.stats import chi2
 
-
-def AIC(lnL, variables):
-    return 2*variables -2*lnL
-
-def likelihood_ratio(lnL1, lnL2):
-	return -2*(lnL1-lnL2)
-
-def calculate_p(test_statistic, df):
-    return 1-chi2.cdf(test_statistic, df)
-
-def test(lnL1, lnL2, delta_parameters):
-	test_stat = likelihood_ratio(lnL1, lnL2)
-	p = calculate_p(test_stat, delta_parameters)
-	return p
-
-
 @jit("float64(float64, int64)", nopython = True)
 def poisson(l, x):
 		p = exp(-l)
@@ -59,7 +43,7 @@ def recombination_rate(m, pi_vector,lambda_value, mu_value):
 
 def generate_pi_vector(gamma_values):
 		'''
-		Generates the stationary distribution and stores it as self.pi_vector
+		Generates the stationary distribution
 		'''
 		m = len(gamma_values) -1
 		pi_vector = numpy.zeros(m+1, numpy.float64)
@@ -85,7 +69,6 @@ def numba_generate_D(m, x, lambda_value, mu_value, gamma_values, g_values):
 	lambda_value/mu_value/g_value: see class Chromosome
 	'''
 	matrix = numpy.zeros((m+1,m+1), numpy.float64)
-	maxint = 9223372036854775807
 	if lambda_value+mu_value != 0:
 		p1 = mu_value/(lambda_value+mu_value)
 		p2 = lambda_value/(lambda_value+mu_value)
@@ -629,9 +612,9 @@ class Investigation:
 
 		print(output_string)
 		if(self.output_file is not None):
-			f = open(self.output_file, 'a')
-			f.write(output_string)
-			f.close()
+			with open(self.output_file, 'a+') as f:
+				f.write(output_string)
+				f.close()
 
 
 
