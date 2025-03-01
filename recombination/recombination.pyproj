@@ -4,7 +4,7 @@
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>593c73ce-67cd-4027-8852-515c3851a195</ProjectGuid>
     <ProjectHome>.</ProjectHome>
-    <StartupFile>standard_inversion.py</StartupFile>
+    <StartupFile>example_runs.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
@@ -21,11 +21,13 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="copenhaver.py" />
-    <Compile Include="morgan.py" />
-    <Compile Include="paracentric_linear_inversion.py" />
+    <Compile Include="example_runs.py">
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="recombination.py" />
-    <Compile Include="standard_inversion.py" />
+    <Compile Include="sterility.py">
+      <SubType>Code</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Content Include="datasets\anderson.txt" />
@@ -51,6 +53,7 @@
     <Content Include="datasets\sturtevant_sc4_unbalanced.txt" />
     <Content Include="datasets\sturtevant_sc8_unbalanced.txt" />
     <Content Include="datasets\weinstein.txt" />
+    <Content Include="README.md" />
   </ItemGroup>
   <ItemGroup>
     <Folder Include="datasets\" />

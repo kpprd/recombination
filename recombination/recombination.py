@@ -2,7 +2,6 @@
 from ast import Lambda, Param
 from math import inf
 from ftplib import all_errors
-#from multiprocessing import parent_process
 import re
 from tabnanny import verbose
 from tkinter import CURRENT
@@ -24,6 +23,26 @@ from numba import jit, njit
 import matplotlib.pyplot as pt
 from scipy.stats import gamma
 from scipy.stats import chi2
+import os
+
+from sterility import sterility_and_rec
+
+def AIC(lnL, variables):
+    return 2*variables -2*lnL
+
+def delta_AIC(delta_lnL, delta_variables):
+	return 2*delta_lnL -2*delta_variables
+
+def likelihood_ratio(lnL1, lnL2):
+	return -2*(lnL1-lnL2)
+
+def calculate_p(test_statistic, df):
+    return 1-chi2.cdf(test_statistic, df)
+
+def test(lnL1, lnL2, delta_parameters):
+	test_stat = likelihood_ratio(lnL1, lnL2)
+	p = calculate_p(test_stat, delta_parameters)
+	return p
 
 @jit("float64(float64, int64)", nopython = True)
 def poisson(l, x):
@@ -39,7 +58,6 @@ def recombination_rate(m, pi_vector,lambda_value, mu_value):
 		for c in range(q+1):
 			f+= pi_vector[q]*(poisson(lambda_value, c))
 	return 0.5*(1-exp(-mu_value)*f)
-
 
 def generate_pi_vector(gamma_values):
 		'''
@@ -58,6 +76,22 @@ def generate_pi_vector(gamma_values):
 		return pi_vector
 
 
+
+def generate_sample(probabilities, N):
+    probabilities = numpy.array(probabilities)
+    probabilities /= probabilities.sum()
+    sample = numpy.random.choice(len(probabilities), size=N, p=probabilities)
+    counts = numpy.bincount(sample, minlength=len(probabilities))
+    return counts
+
+
+def chi_squared(expected, observed):
+	return sum((expected-observed)**2/expected)
+
+def is_balanced(pattern, left_intervals_n, inversion_intervals_n):
+	return sum(pattern[left_intervals_n:left_intervals_n + inversion_intervals_n])%2 == 0
+	
+	
 
 @jit("f8[:,:](u8, u8, f8, f8, f8[:], f8[:,:])",nopython=True)
 def numba_generate_D(m, x, lambda_value, mu_value, gamma_values, g_values):
@@ -111,6 +145,68 @@ def numba_generate_D(m, x, lambda_value, mu_value, gamma_values, g_values):
 	return matrix
 
 
+class SterilityAndPatterns:
+	def __init__(self, sterility, pattern_probabilities_array, all_pattern_probabilities_array, all_patterns_order, all_data):
+		self.sterility = sterility
+		self.pattern_probabilities_array = pattern_probabilities_array
+		self.all_pattern_probabilites_array = all_pattern_probabilities_array
+		self.all_patterns_order = all_patterns_order
+		self.all_data = all_data
+
+		
+def fuse_patterns(outer_left_patterns, inner_left_patterns, inner_right_patterns, outer_right_patterns, pattern_order, data_dict, loci_to_remove):
+		pattern_probabilities_array = [0.0 for i in range(len(pattern_order))]
+		all_pattern_probabilities_dict = {}
+		all_patterns_order = []
+		all_pattern_probabilities = []
+		all_data = []
+		sterility = 0
+		calculator = Calculator()
+		for outer_left_pattern_reversed, outer_left_value in outer_left_patterns.items():
+			for inner_left_pattern, inner_left_value in inner_left_patterns.items():
+				for inner_right_pattern_reversed, inner_right_value in inner_right_patterns.items():
+					for outer_right_pattern, outer_right_value in outer_right_patterns.items():
+						outer_left_pattern = tuple(reversed(outer_left_pattern_reversed))
+						inner_right_pattern = tuple(reversed(inner_right_pattern_reversed))
+						balanced = (sum(inner_right_pattern) + sum(inner_left_pattern)) % 2 == 0
+						fused_probability = outer_left_value*inner_left_value*inner_right_value*outer_right_value
+						if not balanced:
+							sterility += fused_probability
+							fused_pattern = "unbalanced"
+						else:
+							full_pattern = outer_left_pattern + inner_left_pattern + inner_right_pattern + outer_right_pattern
+							fused_pattern = calculator.remove_loci(list(full_pattern), loci_to_remove)
+							if fused_pattern not in all_patterns_order:
+								all_patterns_order.append(fused_pattern)
+								all_pattern_probabilities.append(0.0)
+								if fused_pattern in data_dict:
+									all_data.append(data_dict[fused_pattern])
+								else:
+									all_data.append(0)
+							else:
+								ertert = 1
+							if fused_pattern not in all_pattern_probabilities_dict:
+								all_pattern_probabilities_dict[fused_pattern] = fused_probability
+							else:
+								all_pattern_probabilities_dict[fused_pattern] += fused_probability
+							if fused_pattern in pattern_order:
+								index = pattern_order.index(fused_pattern)
+								pattern_probabilities_array[index] += fused_probability
+							if fused_pattern in all_patterns_order:
+								index = all_patterns_order.index(fused_pattern)
+								all_pattern_probabilities[index] += fused_probability
+							else:
+								print("OH NO!S")
+							if balanced and fused_pattern != "unbalanced" and fused_pattern not in all_patterns_order:
+								print("Error! Pattern " + str(fused_pattern) + " not found!")
+								sys.exit(1)
+		if "unbalanced" in data_dict:
+			all_patterns_order.append("unbalanced")
+			all_pattern_probabilities.append(sterility)
+			all_data.append(data_dict["unbalanced"])
+		return SterilityAndPatterns(sterility, numpy.array(pattern_probabilities_array), numpy.array(all_pattern_probabilities), all_patterns_order, all_data)
+
+
 class CoincidenceFigure:
 	def __init__(self, title = ""):
 		self.coincidence_plots = []
@@ -136,10 +232,102 @@ class CoincidencePlot:
 			gamma_sum = self.get_sum(gamma_values)
 			return (p/gamma_sum)/(1-p)
 
+
+class ParametricBootstrap:
+	def __init__(self, loci, pattern_order, pattern_probabilities, N, identifier, parameter_estimates, estimate_likelihood, data, estimate_sterility, repeat = 50, replications = 100, interference_parameters = 1, interference_bounds = (0,15), seed = None, breakpoint_nonstationarity = False, stationary_test = False, different_breakpoint_interference=False, start_at = 0):
+		self.loci = loci
+		self.pattern_order = pattern_order
+		self.pattern_probabilities = pattern_probabilities
+		self.N = N
+		self.parameter_estimates = parameter_estimates
+		self.repeat = repeat
+		self.replications = 100
+		self.identifier = identifier
+		self.file_path = identifier + "/" + identifier
+		self.file_path_and_file = self.file_path + ".txt"
+		self.interference_parameters = interference_parameters
+		self.interference_bounds = interference_bounds
+		self.parameter_estimates = numpy.array(parameter_estimates)
+		self.bootstrap_estimates = [[] for i in range(len(parameter_estimates))]
+		self.stationary_test = stationary_test
+		self.different_breakpoint_interference = different_breakpoint_interference
+		self.test_statistics = []
+		self.log_likelihoods = []
+		self.sterilities = []
+		self.breakpoint_nonstationarity = breakpoint_nonstationarity
+		self.estimate_likelihood = estimate_likelihood
+		self.estimate_sterility = estimate_sterility
+		self.data = data
+		self.start_at = start_at
+		self.seed = seed
+		if not os.path.exists(identifier):
+			os.makedirs(identifier)
+	
+	def run(self):
+		nonzero_i = numpy.where(self.data != 0)
+		observed = self.data[nonzero_i]
+		expected = self.pattern_probabilities[nonzero_i]*self.N
+		self.estimate_test_statistic = self.get_test_statistic(expected, observed)
+		bigger = 0
+		if(self.file_path_and_file is not None):
+			with open(self.file_path_and_file, 'a+') as f:
+				f.write(str(list(self.data)) + "\t" + str(list(self.parameter_estimates)) + "\t" + str(self.estimate_sterility) + "\t" + str(self.estimate_likelihood) + "\t" + str(self.estimate_test_statistic) + "\n")
+				f.close()
+		for r in range(self.replications):
+			sample = self.resample(self.pattern_probabilities, self.N)
+			data = []
+			for c in range(len(sample)):
+				if sample[c] != 0 or self.pattern_order[c] == "unbalanced":
+					data.append(str(self.pattern_order[c]) + "\t" + str(sample[c]))
+			nonzero_i = numpy.where(sample != 0)
+			nonzero_sample = sample[nonzero_i]
+			stat_check = self.file_path + "_check" + str(r) + ".txt"
+			investigation = Investigation(self.loci, extra_pathway = False, interference_parameters=self.interference_parameters, interference_bounds=self.interference_bounds, alpha = 0, beta = 0, include_breakpoint_loci = False, include_patterns_in_report = True, include_all_patterns=True,  breakpoint_nonstationarity = self.breakpoint_nonstationarity, output_file = self.file_path +str(r)+".txt", statistic_check = stat_check, stationary_test=self.stationary_test, different_breakpoint_interference = self.different_breakpoint_interference, seed=self.seed)
+			investigation.read_input("", lines = data)
+			investigation.run_nelder_mead(repeat = self.repeat, verbose = True, report_frequency = 1000)
+			sterility = investigation.unbalanced_proportion
+			test_statistic = investigation.chisquare
+			self.log_likelihoods.append(investigation.loglikelihood)
+			self.sterilities.append(sterility)
+			# expected = self.N*investigation.best_patterns
+			# test_statistic = self.get_test_statistic(expected, sample)
+			if test_statistic > self.estimate_test_statistic:
+				bigger += 1
+			current_P = (bigger+1)/(r++1+1)
+			print("Current P estimate: " + str(current_P))
+			self.test_statistics.append(test_statistic)
+			if(self.file_path_and_file is not None):
+				with open(self.file_path_and_file, 'a+') as f:
+					f.write(str(list(sample)) + "\t" + str(list(investigation.parameter_estimates)) + "\t" + str(sterility) + "\t" + str(investigation.current_best) + "\t" + str(test_statistic) + "\n")
+					f.close()
+			for i in range(len(investigation.parameter_estimates)):
+				self.bootstrap_estimates[i].append(investigation.parameter_estimates[i])
+		self.P = (bigger + 1)/(self.replications +1)
+		outstring = "bootstrap: " + str(self.bootstrap_estimates) +"\nlog likelihoods: " + str(self.log_likelihoods) + "\nsterilities: " + str(self.sterilities) + "\ntest statistics: " + str(self.test_statistics) + "\nP: " + str(self.P)
+		if(self.file_path_and_file is not None):
+			with open(self.file_path_and_file, 'a+') as f:
+				f.write(outstring)
+				f.close()
+
+	def get_test_statistic(self, expected, observed):
+		if 0 in expected:
+			return inf
+		else:
+			return 2*sum(observed*numpy.log(observed/expected))
+		
+	def resample(self, prob, N):
+		prob = prob/prob.sum()
+		sample = numpy.random.choice(len(prob), size=N, p=prob)
+		counts = numpy.bincount(sample, minlength=len(prob))
+		return counts
+	
+
+
 class Investigation:
 	"""
 	A class for performing maximum likelihood parameter estimations on recombination and tetrad data.
 	Key attributes:
+	loci (string): indicate the position of each loci relative to the breakpoints and centromere. Each locus must be given a unique character, and the breakpoints (if present) must be indicated with [ and ], and the centromere (if present) with @. 
 	model (string): Which parametrization to use. You can choose between the following:
 		'free': runs the analysis with the gamma, mix3, mix7, mix15 or mix31 models, depending on the number given number of interference_parameters
 		'negative': the gamma + gamma_0 model
@@ -148,16 +336,31 @@ class Investigation:
 	extra_pathway (bool): Whether or not to include an additional non-interfering pathway (+ mu)
 	tetrad (bool): True if the input data is for a tetrad
 	linear_meiosis (bool): True  if the input data is for a heterokaryotype with linear meiosis
-
+	different_breakpoint_interference (bool): True if the breakpoint-chiasma and chiasma-chiasma intererence is allowed to differ (i.e. the H2 model)
+	alpha/beta (bool): indicates whether or not the interference crosses the breakpoints/centromere
+	closed_form (bool): Indicates whether the closed form version of the equations should be used (not always applicable, see Kapperud 2023)
+	breakpoint_nonstationarity (bool): indicates whether or not the analysis will include breakpoint interference
+	stationary_test (bool): if breakpoint_nonstationarity is True and stationary_test is False, the analysis will run the four regions separated by the breakpoints and the centromere separately, but without breakpoint inteference. Used for testing that this gives the same result as running all regions as one. 
 	"""
-	def __init__(self, loci, model = "free", gamma_values = None, lambda_values = None, h = None, p = None, extra_pathway = False, start_at_gamma = 0, include_breakpoint_loci = False, output_file = None, alpha = 0, beta = 1, linear_meiosis = False, include_centromere = False, include_patterns_in_report = True, d_values = None, interference_direction = "original", tetrad = False, distances = False, error1 = 10e-12, error2 = 10e-11, error3 = 1e-12, min_x = 2, max_x = 20, benchmark = 0, plot_span = 1, plot_resolution = 1000, plot_name = None, plot_marker = None, figure_name = None, figure_header = None, coincidence4_interval_size = 0.001, interference_bounds = 10, interference_parameters = 1, closed_form = False, seed = None):
+	def __init__(self, loci, model = "free", gamma_values = None, lambda_values = None, h = None, p = None, extra_pathway = False, different_breakpoint_interference =False, start_at_gamma = 0, include_breakpoint_loci = False, output_file = None, alpha = 0, beta = 1, linear_meiosis = False, include_centromere = False, include_patterns_in_report = True, include_all_patterns = True, d_values = None, interference_direction = "original", tetrad = False, distances = False, error1 = 10e-12, error2 = 10e-11, error3 = 1e-12, min_x = 2, max_x = 20, benchmark = 0, plot_span = 1, plot_resolution = 1000, plot_name = None, plot_marker = None, figure_name = None, figure_header = None, coincidence4_interval_size = 0.001, interference_bounds = 10, interference_parameters = 1, closed_form = False, seed = None, breakpoint_nonstationarity = False, stationary_test = False, print_probabilities = False, calculate_goodness_of_fit = False, minimize_chisquare = False, statistic_check = None):
 		self.chromosome = None
 		self.error1 = error1
 		self.error2 = error2
 		self.error3 = error3
+		self.chisquare = None
 		self.report_frequency = 100
+		self.print_probabilities = print_probabilities
 		self.repetition = 0
+		self.breakpoint_nonstationarity = breakpoint_nonstationarity
+		self.include_all_patterns = include_all_patterns
+		self.stationary_test = stationary_test
 		self.interference_parameters_n = interference_parameters
+		self.calculate_goodness_of_fit = calculate_goodness_of_fit
+		self.difference_breakpoint_interference = different_breakpoint_interference
+		self.all_pattern_probabilities_array = None
+		self.parameter_estimates = None
+		self.minimize_chisquare = minimize_chisquare
+		self.statistic_check = statistic_check
 		if self.interference_parameters_n not in [0,1,3,7,15,31]:
 			print("Error! Input 'interference_parameters' must be either 0, 1, 3, 7, 15 or 31")
 			sys.exit(1)
@@ -187,6 +390,7 @@ class Investigation:
 		self.inversion = False
 		self.unbalanced_proportion = 0
 		self.tetrad = tetrad
+
 		self.p = p
 		if ("[" in self.loci and not "]" in self.loci) or ("]" in self.loci and not "[" in self.loci):
 			print("Error! You have included only one breakpoint. You must include either two or none.")
@@ -197,6 +401,10 @@ class Investigation:
 			self.reduced_intervals_n = self.reduced_intervals_n - 1
 		if "[" in self.loci:
 			self.inversion = True
+			left_breakpoint_index = self.loci.index("[")
+			right_breakpoint_index = self.loci.index("]")
+			self.left_intervals_n = left_breakpoint_index
+			self.inversion_intervals_n = right_breakpoint_index - left_breakpoint_index
 		if model == "coincidence" or model == "sterility":
 			self.coincidence_plots = [CoincidencePlot(gamma_values = gamma_values, p = p, plot_marker= plot_marker)]
 			self.coincicdence_figures = CoincidenceFigure(title = figure_name)
@@ -249,12 +457,17 @@ class Investigation:
 				self.h = 0
 			else:
 				self.h = h
-
+		if self.inversion and self.breakpoint_nonstationarity:
+			self.left_breakpoint_index = self.loci.index("[")
+			self.right_breakpoint_index = self.loci.index("]")
+			self.centromere_index = self.loci.index("@")
+			self.outer_left_loci = "*" + self.loci[0:self.left_breakpoint_index][::-1]
+			self.inner_left_loci = "*" + self.loci[self.left_breakpoint_index+1:self.centromere_index] + "#"
+			self.inner_right_loci = "*" + self.loci[self.centromere_index+1:self.right_breakpoint_index][::-1] + "#"
+			self.outer_right_loci = "*" + self.loci[self.right_breakpoint_index+1:len(self.loci)]
 
 	def add_coincidence_plot(self, gamma_values, p, plot_marker):
 		self.coincidence_plots.append(CoincidencePlot(gamma_values, p, plot_marker))
-
-
 
 	def plot_coincidence3(self):
 		Xs = numpy.linspace(1e-5, self.plot_span, self.plot_resolution)
@@ -399,7 +612,9 @@ class Investigation:
 
 	def analyze_solution(self, solution):
 		evaluation = - self.minus_log_likelihood(solution, final = True)
-		self.calculate_map(solution, evaluation)
+		# gof1 = GoodnessOfFit(self.all_best_patterns, self.all_data)
+		# self.chisquare = gof1.get_test_statistic(gof1.expected, gof1.data)
+		self.calculate_map(solution, evaluation, best = True)
 
 	def calculate_p(self, h, gamma_values):
 		if h == 0:
@@ -439,7 +654,9 @@ class Investigation:
 		self.map = []
 		alpha = self.alpha
 		beta = self.beta
+		self.evaluation = evaluation
 		include_patterns = self.include_patterns_in_report
+		self.parameter_estimates = parameters
 		if self.model == "free":
 			if self.interference_parameters_n == 0:
 				if self.input_gamma_values == None:
@@ -558,48 +775,65 @@ class Investigation:
 			output_string = "\n**********"
 		if best:
 			output_string = "\n*****BEST RESULT*****"
-		output_string += "\nFile: " + self.input_file + "\nTime: " + str(datetime.now()) + "\nLoci: " + self.loci + "\nModel: " + self.model + "\nExtra pathway: " + str(self.extra_pathway) + "\nh: " + str(h) + "\nu: " + str(p)
+		if self.input_file != None:
+			output_string += "\nFile: " + self.input_file
+		output_string += "\nTime: " + str(datetime.now()) + "\nLoci: " + self.loci + "\nModel: " + self.model + "\nExtra pathway: " + str(self.extra_pathway) + "\nh: " + str(h) + "\nu: " + str(p)
 		output_string += "\nn: " + str(self.n)
 		output_string += "\nRepetition " + str(self.repetition)
+		output_string += "\nMinimize: " + str(self.minimize_chisquare)
 		if self.inversion and self.alpha:
 			output_string = output_string + "\nDirection: " + self.interference_direction
 		output_string += "\nClosed form: " + str(self.closed_form)
-		
+		output_string += "\nBreakpoint interference: " + str(self.breakpoint_nonstationarity)
+		if self.difference_breakpoint_interference:
+			output_string += "\nBreakpoint interference strength: " + str(parameters[-1])
+		output_string += "\nStationary test: " + str(self.stationary_test)
 		output_string = output_string + "\nAlpha: " + str(alpha)
 		output_string = output_string + "\nBeta: " + str(beta)
 		if self.interference_parameters_n > 0:
 			output_string += "\nInterference bounds: " + str(self.interference_bounds)
 		if self.model == "free":
 			output_string += "\nInterference parameters: " + str(self.interference_parameters_n)
+		output_string = output_string + "\nEvaluation: " + str(self.loglikelihood)
+		if self.chisquare != None:
+			output_string = output_string + "\nTest statistic: " + str(self.chisquare)
 		output_string = output_string + "\nGamma values: " + str(gamma_values)
 		if self.model == "free" and self.interference_parameters_n == 1:
 			output_string += "\nq: " + str(q)
-		else:
-			output_string = output_string + "\nm: " + str(self.m)
 		output_string = output_string + "\nLambda values: " + str(lambda_values)+ "\nMap: " + str(100*(numpy.array(self.map)))
 		output_string = output_string + "\nSolution: " + str(list(parameters))
 		if not self.tetrad:
-			if not "unbalanced" in self.data_dict:
-				output_string = output_string + "\nEstimated sterility: " + str(self.unbalanced_proportion)
+			output_string = output_string + "\nEstimated sterility: " + str(self.unbalanced_proportion)
 		output_string = output_string + "\nLog10 error1: " + str(log10(self.error1))
 		if self.tetrad or self.linear_meiosis:
 			output_string = output_string + "\nLog10 error2: " + str(log10(self.error2))
 			output_string = output_string + "\nMin x: " + str(self.min_x)
 			output_string = output_string + "\nMax x: " + str(self.max_x)
-		output_string = output_string + "\nEvaluation: " + str(evaluation)
 		output_string = output_string + "\n"
 		if evaluation > self.benchmark:
 			output_string = output_string + "\nBENCHMARK REACHED!"
+		if self.print_probabilities:
+			output_string = output_string + "\nProbabilities: " +str(list(self.best_patterns))
+			output_string = output_string + "\nExpected: " +str(list(self.n*self.best_patterns))
 		if include_patterns or evaluation > self.benchmark or best:
-			for i in range(len(self.pattern_order)):
-				pattern = self.pattern_order[i]
-				if pattern in self.data_dict:
-					observed = self.data_dict[pattern]
-				else:
-					observed = 0
+			if self.include_all_patterns:
+				patterns = self.all_patterns_order
+				probabilities = self.all_best_patterns
+				data = self.all_data
+			else:
+				patterns = self.pattern_order
+				probabilities = self.best_patterns
+				data = self.data
+			for i in range(len(patterns)):
+				pattern = patterns[i]
+				observed = data[i]
+				# if pattern in self.data_dict:
+				# 	observed = self.data_dict[pattern]
+				# else:
+				# 	observed = 0
 				output_string = output_string + "\n----"
 				output_string = output_string + "\nPattern: " + str(pattern)
-				output_string = output_string + "\nExpected: " + str(self.n*self.best_patterns[i])
+				output_string = output_string + "\nExpected: " + str(self.n*probabilities[i])
 				output_string = output_string + "\nObserved: " + str(observed)
 			if 'unbalanced' in self.data_dict:
 				output_string = output_string + "\n----"
@@ -618,9 +852,12 @@ class Investigation:
 
 
 
-	def read_input(self, path):
+	def read_input(self, path, lines = None):
 		self.input_file = path
-		input_file = open(path)
+		if lines != None:
+			input_file = lines
+		else:
+			input_file = open(path)
 		if self.tetrad:
 			for line in input_file:
 				line = line.strip()
@@ -631,18 +868,26 @@ class Investigation:
 				line = line.strip()
 				elements = line.split("\t")
 				if(elements[0] != "unbalanced"):
-					self.data_dict[tuple(map(bool,tuple(map(int, elements[0]))))] = int(elements[1])
+					if lines != None:
+						self.data_dict[eval(elements[0])] = int(elements[1])
+					else:
+						self.data_dict[tuple(map(bool,tuple(map(int, elements[0]))))] = int(elements[1])
 				else:
 					self.data_dict["unbalanced"] =int(elements[1])
 		x = self.data_dict
-		input_file.close()
+		self.all_data = []
+		if lines == None:
+			input_file.close()
 		if self.tetrad:
 			intervals_n = self.reduced_intervals_n
 			zot = [[0,1,2] for i in range(intervals_n)]
 			for pattern in itertools.product(*zot):
 				if pattern in self.data_dict:
 					self.data.append(self.data_dict[pattern])
+					self.all_data.append(self.data_dict[pattern])
 					self.pattern_order.append(pattern)
+				else:
+					self.all_data.append(0)
 				self.all_patterns_order.append(pattern)
 		else:
 			intervals_n = self.reduced_intervals_n
@@ -650,13 +895,20 @@ class Investigation:
 			for pattern in itertools.product(*tf):
 				if pattern in self.data_dict:
 					self.data.append(self.data_dict[pattern])
+					self.all_data.append(self.data_dict[pattern])
 					self.pattern_order.append(pattern)
+				else:
+					if not self.inversion:
+						self.all_data.append(0)
 				self.all_patterns_order.append(pattern)
+						
 			if "unbalanced" in self.data_dict and self.data_dict["unbalanced"] != 0:
 				self.data.append(self.data_dict["unbalanced"])
+				self.all_data.append(self.data_dict["unbalanced"])
 				self.pattern_order.append("unbalanced")
 				self.all_patterns_order.append("unbalanced")
 		self.data = numpy.array(self.data)
+		self.all_data = numpy.array(self.all_data)
 		self.n = sum(self.data)
 
 
@@ -727,7 +979,6 @@ class Investigation:
 				weight_parameters = parameters[self.intervals_n + self.gamma_parameters_n:self.intervals_n + self.gamma_parameters_n + self.weight_parameters_n]
 				m = int( max(gamma_parameters) // 1) + 2
 				gamma_values = [0.0 for i in range(m)]
-
 				if self.interference_parameters_n == 1:
 					q = parameters[self.intervals_n]
 					k = int(q // 1)
@@ -802,7 +1053,7 @@ class Investigation:
 			else:
 				gamma_values = self.input_gamma_values
 		if self.model == "negative":
-			if self.extra_pathway:
+			if self.extra_pathway or self.difference_breakpoint_interference:
 				gamma_parameter = parameters[-3]
 				weight_parameter = parameters[-2]
 			else:
@@ -827,30 +1078,105 @@ class Investigation:
 		lambda_values = []
 		for x in Xs:
 			lambda_values.append(self.calculate_lambda(x, h, gamma_values))
-
-		chromosome = Chromosome(self.loci, lambda_values, d_values, gamma_values, self, h = h, alpha = self.alpha, beta = self.beta, linear_meiosis = self.linear_meiosis, tetrad = self.tetrad) 
-		self.m = chromosome.m
-		if self.tetrad:
-			chromosome.calculate_tetrad_pattern_probabilities()
+		if self.breakpoint_nonstationarity and self.inversion:
+			outer_left_lambda = lambda_values[0:self.left_breakpoint_index][::-1]
+			inner_left_lambda = lambda_values[self.left_breakpoint_index:self.centromere_index]
+			inner_right_lambda = lambda_values[self.centromere_index:self.right_breakpoint_index][::-1]
+			outer_right_lambda = lambda_values[self.right_breakpoint_index:]
+			if self.difference_breakpoint_interference:
+				q = parameters[-1]
+				k = int(q // 1)
+				start_distribution =  [0 for i in range(k)]
+				start_distribution.append(1-(q%1))
+				start_distribution.append(q%1)
+			else:
+				start_distribution = None
+			outer_left = Chromosome(self.outer_left_loci, outer_left_lambda, d_values, gamma_values, self, start_distribution=start_distribution, h = h, alpha = self.alpha, beta = self.beta, linear_meiosis = self.linear_meiosis, tetrad = self.tetrad, nonstationary = True) 
+			inner_left = Chromosome(self.inner_left_loci, inner_left_lambda, d_values, gamma_values, self, start_distribution=start_distribution, h = h, alpha = self.alpha, beta = self.beta, linear_meiosis = self.linear_meiosis, tetrad = self.tetrad,  nonstationary = True) 
+			inner_right = Chromosome(self.inner_right_loci, inner_right_lambda, d_values, gamma_values, self, start_distribution=start_distribution, h = h, alpha = self.alpha, beta = self.beta, linear_meiosis = self.linear_meiosis, tetrad = self.tetrad,  nonstationary = True) 
+			outer_right = Chromosome(self.outer_right_loci, outer_right_lambda, d_values, gamma_values, self,start_distribution=start_distribution, h = h, alpha = self.alpha, beta = self.beta, linear_meiosis = self.linear_meiosis, tetrad = self.tetrad,  nonstationary = True)
+			outer_left.calculate_recombination_pattern_probabilities()
+			inner_left.calculate_recombination_pattern_probabilities()
+			inner_right.calculate_recombination_pattern_probabilities()
+			outer_right.calculate_recombination_pattern_probabilities()
+			chromosome = Chromosome(self.loci, lambda_values, d_values, gamma_values, self, h = h, alpha = self.alpha, beta = self.beta, linear_meiosis = self.linear_meiosis, tetrad = self.tetrad)
+			loci_to_remove = [self.loci.index("["), self.loci.index("@"), self.loci.index("]")]
+			sterility_and_patterns = fuse_patterns(outer_left.karyotypes[0].patterns_dict, inner_left.karyotypes[0].patterns_dict, inner_right.karyotypes[0].patterns_dict, outer_right.karyotypes[0].patterns_dict, self.pattern_order, self.data_dict, loci_to_remove)
+			pattern_probabilities_array = sterility_and_patterns.pattern_probabilities_array
+			sterility = sterility_and_patterns.sterility
+			self.unbalanced_proportion = sterility
+			s = sum(pattern_probabilities_array)
+			self.all_pattern_probabilities_array = sterility_and_patterns.all_pattern_probabilites_array
+			s2 = sum(self.all_pattern_probabilities_array)
+			self.all_data = numpy.array(sterility_and_patterns.all_data)
+			self.all_patterns_order = sterility_and_patterns.all_patterns_order
+			if not "unbalanced" in self.data_dict:
+				pattern_probabilities_array = pattern_probabilities_array/(1-sterility)
+				self.all_pattern_probabilities_array = self.all_pattern_probabilities_array/(1-sterility)
+			x = self.data
+			expected = sum(self.all_data)*self.all_pattern_probabilities_array
+			observed = self.all_data
+			N = sum(self.data)
+			z = pattern_probabilities_array
+			if 0 in pattern_probabilities_array:
+				chisquare = inf
+			else:
+				chisquare = 2*sum(x*numpy.log(x/(N*z)))
+			self.chisquare = chisquare
+			if final:
+				self.best_patterns = pattern_probabilities_array
+				self.all_best_patterns = self.all_pattern_probabilities_array
+			if 0 in pattern_probabilities_array:
+				likelihood = -inf
+			else:
+				y = numpy.log(pattern_probabilities_array)
+				likelihood = sum(x*y)
+			self.loglikelihood = likelihood
+			self.counter += 1
+			if self.verbose and self.counter % self.report_frequency == 0:
+				print(str(datetime.now()))
+				print(parameters)
+				print(likelihood)
+				print(chisquare)
+			if self.minimize_chisquare:
+				return chisquare
+			else:
+				return - likelihood
 		else:
-			chromosome.calculate_recombination_pattern_probabilities()
-		chromosome.calculate_likelihood(final)
-		self.counter += 1
-		if self.verbose and self.counter % self.report_frequency == 0:
-			print(str(datetime.now()))
-			print(parameters)
-			print(chromosome.likelihood)
-		return -chromosome.likelihood
+			chromosome = Chromosome(self.loci, lambda_values, d_values, gamma_values, self, h = h, alpha = self.alpha, beta = self.beta, linear_meiosis = self.linear_meiosis, tetrad = self.tetrad) 
+			self.m = chromosome.m
+			if self.tetrad:
+				chromosome.calculate_tetrad_pattern_probabilities()
+			else:
+				chromosome.calculate_recombination_pattern_probabilities(final)
+			chromosome.calculate_likelihood(final)
+			pattern_probabilities_array = chromosome.pattern_probabilities_array
+			x = self.data
+			N = sum(self.data)
+			z = pattern_probabilities_array
+			if 0 in pattern_probabilities_array:
+				chisquare = inf
+			else:
+				chisquare = 2*sum(x*numpy.log(x/(N*z)))
+			self.chisquare = chisquare
+			self.counter += 1
+			if self.verbose and self.counter % self.report_frequency == 0:
+				print(str(datetime.now()))
+				print(parameters)
+				print(chromosome.likelihood)
+				print(self.chisquare)
+			self.loglikelihood = chromosome.likelihood
+			return -chromosome.likelihood
 
 	
 	def add_calculator(self, calculator):
 		self.calculator = calculator
 
-
 	def run_nelder_mead(self, repeat = 1, verbose = True, report_frequency = 100):
 		self.verbose = verbose
 		self.repetition = 0
 		self.current_best = -inf
+		self.current_best_chisquare = inf
 		self.is_current_best = True
 		for i in range(repeat):
 			self.repetition += 1
@@ -872,17 +1198,33 @@ class Investigation:
 			if self.extra_pathway:
 				bounds = bounds + ((0,0.9999),)
 				parameters.append(random.uniform(0,0.9999))
+			elif self.difference_breakpoint_interference:
+				bounds = bounds + ((self.interference_bounds),)
+				parameters.append(random.uniform(self.seed[0], self.seed[1]))
 			self.report_frequency = report_frequency
 			result = minimize(self.minus_log_likelihood, parameters, bounds = bounds, method = "Nelder-Mead")
 			solution = result['x']
 			self.solution = solution
 			evaluation = - self.minus_log_likelihood(solution, final = True)
-			if evaluation > self.current_best:
-				self.current_best = evaluation
-				self.current_best_solution = self.solution
-				self.is_current_best = True
+			if self.minimize_chisquare:
+				if self.chisquare < self.current_best_chisquare:
+					self.current_best_chisquare = self.chisquare
+					self.current_best = evaluation
+					self.current_best_solution = self.solution
+					self.is_current_best = True
+				else:
+					self.is_current_best = False
 			else:
-				self.is_current_best = False
+				if evaluation > self.current_best:
+					self.current_best = evaluation
+					self.current_best_solution = self.solution
+					self.is_current_best = True
+				else:
+					self.is_current_best = False
+			if self.statistic_check is not None:
+				with open(self.statistic_check, 'a+') as f:
+					f.write(str(evaluation) + "\t" + str(self.chisquare)+"\n")
+					f.close()
 			self.calculate_map(solution, evaluation)
 		best_solution = self.current_best_solution
 		best_evaluation = self.current_best
@@ -924,16 +1266,18 @@ class Chromosome:
 
 	
 	'''
-	def __init__(self, loci_keys, lambda_values, d_values, gamma_values, investigation, h = 0, alpha = 0, beta = 1, linear_meiosis = False, tetrad = False, allele_ns_dictionary = {}):
+	def __init__(self, loci_keys, lambda_values, d_values, gamma_values, investigation, h = 0, alpha = 0, beta = 1, linear_meiosis = False, tetrad = False, allele_ns_dictionary = {}, nonstationary = False, start_distribution = None):
 		self.calculator = Calculator()
 		self.investigation = investigation
+		self.nonstationary = nonstationary
 		gamma_values = [float(x) for x in gamma_values]
 		self.loci_keys = loci_keys
 		self.loci_keys_reversed = None
+		self.start_distribution = start_distribution
 		self.loci_n = len(self.loci_keys)
 		self.allele_ns_dictionary = allele_ns_dictionary
 		self.gamma_values = list(gamma_values)
-		self.set_gamma_values(gamma_values);
+		self.set_gamma_values(gamma_values, start_distribution);
 		self.alpha = alpha
 		self.g_values = None
 		self.pi_vector = None
@@ -1149,8 +1493,8 @@ class Chromosome:
 		else:
 			self.get_recombination_pattern_probabilities(final = final)
 		self.investigation.best_patterns = self.pattern_probabilities_array
-		if final:
-			self.investigation.all_best_patterns = self.all_pattern_probabilities_array
+		# if final:
+		# 	self.investigation.all_best_patterns = self.all_pattern_probabilities_array
 		if 0 in self.pattern_probabilities_array:
 			self.likelihood = -inf
 		else:
@@ -1177,9 +1521,9 @@ class Chromosome:
 		for k in self.karyotypes:
 			k.calculate_tetrad_pattern_probabilities()
 
-	def calculate_recombination_pattern_probabilities(self):
+	def calculate_recombination_pattern_probabilities(self, calculate_all_patterns = False):
 		for k in self.karyotypes:
-			k.calculate_recombination_pattern_probabilities()
+			k.calculate_recombination_pattern_probabilities(calculate_all_patterns = calculate_all_patterns)
 	
 	def calculate_gamete_frequencies(self):
 		self.calculate_recombination_pattern_probabilities()
@@ -1231,15 +1575,30 @@ class Chromosome:
 					self.haplotypes.append(haplotype)
 
 
-	def set_gamma_values(self, gamma_values):
+	def set_gamma_values(self, gamma_values, start_distribution = None):
 		'''
 		Removes trailing zeros from gamma_values.
 		'''
 		while gamma_values[-1] == 0:
 			gamma_values = gamma_values[:-1]
+		if start_distribution != None:
+			while start_distribution[-1] == 0:
+				start_distribution = start_distribution[:-1]
 		self.gamma_values = gamma_values
-		
-		self.m = len(self.gamma_values) -1
+		if start_distribution is None:
+			self.m = len(self.gamma_values) -1
+		else:
+			upper = max([len(gamma_values), len(start_distribution)])
+			while len(gamma_values)<upper:
+				gamma_values.append(0.0)
+			while len(start_distribution)<upper:
+				start_distribution.append(0.0)
+			self.m = upper -1
+			if len(gamma_values) != len(start_distribution):
+				print("Error! The length of gamma_values must be the same as the length of start_distribution!")
+				sys.exit(1)
+			self.gamma_values = gamma_values
+			self.start_distribution = start_distribution
 
 	def generate_g_values(self, maximum):
 		'''
@@ -1283,18 +1642,24 @@ class Chromosome:
 		'''
 		Generates the stationary distribution and stores it as self.pi_vector
 		'''
-		pi_vector = numpy.zeros(self.m+1, numpy.float64)
-		denominator = 0.0
-		gamma_values = self.gamma_values
-		for q in range(self.m+1):
-			denominator += (q+1)*gamma_values[q]
-		for i in range(self.m+1):
-			nominator = 0.0
-			for q in range(i, self.m+1):
-				nominator += gamma_values[q]
-			pi_vector[i] = nominator/denominator
+		if self.nonstationary and not self.investigation.stationary_test:
+			if self.start_distribution != None:
+				self.pi_vector = self.start_distribution
+			else:
+				self.pi_vector = copy.copy(self.gamma_values)
+		else:
+			pi_vector = numpy.zeros(self.m+1, numpy.float64)
+			denominator = 0.0
+			gamma_values = self.gamma_values
+			for q in range(self.m+1):
+				denominator += (q+1)*gamma_values[q]
+			for i in range(self.m+1):
+				nominator = 0.0
+				for q in range(i, self.m+1):
+					nominator += gamma_values[q]
+				pi_vector[i] = nominator/denominator
 		
-		self.pi_vector = pi_vector
+			self.pi_vector = pi_vector
 
 	def extend_b_values(self, extend_by = 10):
 		'''
@@ -1408,7 +1773,8 @@ class Karyotype:
 			self.right_intervals_n = self.chromosome.right_intervals_n
 			self.lambda_values = list(numpy.array(self.lambda_values)*numpy.array(self.d_values))
 			self.mu_values = list(numpy.array(self.mu_values)*numpy.array(self.d_values))
-	
+
+
 	def find_indices(self, pattern, statespace):
 		'''
 		Returns the indices of states in statespace that match the pattern. The pattern is ordinarily given as a list of boolean variables indicating recombination
@@ -1517,14 +1883,14 @@ class Karyotype:
 
 	
 
-	def calculate_recombination_pattern_probabilities(self):
+	def calculate_recombination_pattern_probabilities(self, calculate_all_patterns = False):
 		'''
 		Chooses the appropriate algorithm for calculating recombination pattern probabilities
 		'''
 		if self.chromosome.paracentric_linear and not self.homokaryotype:
 			self.calculate_recombination_pattern_probabilities_1()
 		else:
-			self.calculate_recombination_pattern_probabilities_2()
+			self.calculate_recombination_pattern_probabilities_2(calculate_all_patterns=calculate_all_patterns)
 	
 	def calculate_recombination_pattern_probabilities_1(self):
 		calculator = self.chromosome.calculator
@@ -1628,7 +1994,7 @@ class Karyotype:
 					p = numpy.dot(v, w)
 					patterns[pattern] = p
 					pattern_probabilities_array[pattern_order.index(reduced_pattern)] += p
-					#all_pattern_probabilities_array[all_patterns_order.index(pattern)] += p
+
 
 		w = numpy.zeros(len(self.statespace), numpy.float64)
 		unbalanced_indices = find_indices('unbalanced', self.statespace)
@@ -1650,9 +2016,10 @@ class Karyotype:
 		if not "unbalanced" in self.chromosome.investigation.data_dict:
 				self.pattern_probabilities_array = (self.pattern_probabilities_array*(s+self.unbalanced))/s
 		self.all_pattern_probabilities_array = numpy.array(all_pattern_probabilities_array)
+		self.chromosome.investigation.all_best_patterns = numpy.array(all_pattern_probabilities_array)
 		self.patterns_dict = patterns
 		
-	def calculate_recombination_pattern_probabilities_2(self):
+	def calculate_recombination_pattern_probabilities_2(self, calculate_all_patterns = False):
 		'''
 		Implements theorems 1/2/5, depending on circumstances.
 		'''
@@ -1679,11 +2046,16 @@ class Karyotype:
 		Q = self.Q
 		alpha = self.chromosome.alpha
 		beta = self.chromosome.beta
-		patterns = {'unbalanced': 0.0}
+		if self.chromosome.investigation.breakpoint_nonstationarity:
+			patterns = {}
+		else:
+			patterns = {'unbalanced': 0.0}
 		pattern_order = self.chromosome.investigation.pattern_order
 		all_patterns_order = self.chromosome.investigation.all_patterns_order
 		unbalanced = 0.0
 		independent_regions = self.chromosome.independent_regions
+		if calculate_all_patterns:
+			all_pattern_probabilities_array = numpy.array([0.0 for i in range(len(self.chromosome.investigation.all_patterns_order))])
 		if self.original:
 			independent_intervals = self.chromosome.breakpoint_intervals
 			loci_to_remove = self.chromosome.loci_to_remove
@@ -1691,7 +2063,7 @@ class Karyotype:
 			independent_intervals = self.chromosome.breakpoint_intervals_reversed
 			loci_to_remove = self.chromosome.loci_to_remove
 
-		if self.chromosome.inversion or len(self.chromosome.loci_to_remove)>0:
+		if self.chromosome.inversion or len(self.chromosome.loci_to_remove)>0 or self.chromosome.investigation.breakpoint_nonstationarity or calculate_all_patterns:
 			tf = [[False, True] for i in range(intervals_n)]
 			iterator = itertools.product(*tf)
 		else:
@@ -1711,20 +2083,28 @@ class Karyotype:
 							reduced_pattern = self.chromosome.calculator.reverse_intervals(list(pattern), self.first_inversion_interval, self.last_inversion_interval)
 					if len(self.chromosome.loci_to_remove) > 0:
 						reduced_pattern = self.chromosome.calculator.remove_loci(list(reduced_pattern), loci_to_remove)
-					if not reduced_pattern in pattern_order:
+					if (not reduced_pattern in pattern_order) and (not calculate_all_patterns):
 						skip = True
+			else:
+				reduced_pattern = copy.copy(pattern)
 			if not skip:
 				for i in range(intervals_n):
-					if pattern[i]:
-						mid_vector = dot(mid_vector, Rs[i])
-					else:
-						mid_vector = dot(mid_vector, Ns[i])
-					if i in independent_intervals:
-						mid_vector = dot(mid_vector, Q)
+					try:
+						if pattern[i]:
+							mid_vector = dot(mid_vector, Rs[i])
+						else:
+							mid_vector = dot(mid_vector, Ns[i])
+						if i in independent_intervals:
+							mid_vector = dot(mid_vector, Q)
+					except:
+						print("FEIL")
+						sys.exit(1)
 
 				prob = sum(mid_vector)
 				if prob < 0:
 					prob = 0
+				if calculate_all_patterns and reduced_pattern in all_patterns_order:
+					all_pattern_probabilities_array[all_patterns_order.index(reduced_pattern)] += prob
 				if self.chromosome.inversion or len(loci_to_remove)>0:
 					pattern = reduced_pattern
 				if pattern in patterns:
@@ -1741,7 +2121,7 @@ class Karyotype:
 			unbalanced = self.calculate_sterility2()
 		else:
 			unbalanced = 0
-		if 'unbalanced' in self.chromosome.investigation.data_dict and self.chromosome.investigation.data_dict["unbalanced"] != 0:
+		if 'unbalanced' in self.chromosome.investigation.data_dict and self.chromosome.investigation.data_dict["unbalanced"] != 0 and not self.chromosome.investigation.breakpoint_nonstationarity:
 			
 			inversion_pattern_probabilities_array[pattern_order.index('unbalanced')] = unbalanced
 
@@ -1749,8 +2129,7 @@ class Karyotype:
 		if self.homokaryotype and (not self.chromosome.has_centromere):
 			self.pattern_probabilities_array = numpy.array(inversion_pattern_probabilities_array)
 		else:
-			self.pattern_probabilities_array = numpy.array(inversion_pattern_probabilities_array)
-		self.all_pattern_probabilities_array = numpy.array(self.all_pattern_probabilities_array)
+			self.pattern_probabilities_array = numpy.array(inversion_pattern_probabilities_array)	
 		self.patterns_dict = patterns
 		self.unbalanced = unbalanced
 		
@@ -1758,7 +2137,12 @@ class Karyotype:
 			s = sum(self.pattern_probabilities_array)
 			if not "unbalanced" in self.chromosome.investigation.data_dict:
 				self.pattern_probabilities_array = (self.pattern_probabilities_array*(s+unbalanced))/s
-			
+				if calculate_all_patterns:
+					all_pattern_probabilities_array = (self.all_pattern_probabilities_array*(s+unbalanced))/s
+		if calculate_all_patterns:
+			self.all_pattern_probabilities_array = numpy.array(all_pattern_probabilities_array)
+			self.chromosome.investigation.all_pattern_probabilities_array = numpy.array(all_pattern_probabilities_array)	
+			self.chromosome.investigation.all_best_patterns = numpy.array(all_pattern_probabilities_array)
 	
 	def calculate_tetrad_pattern_probabilities(self):
 		self.generate_tetrad_matrices()
