@@ -27,302 +27,6 @@ import os
 
 from sterility import sterility_and_rec
 
-def AIC(lnL, variables):
-    return 2*variables -2*lnL
-
-def delta_AIC(delta_lnL, delta_variables):
-	return 2*delta_lnL -2*delta_variables
-
-def likelihood_ratio(lnL1, lnL2):
-	return -2*(lnL1-lnL2)
-
-def calculate_p(test_statistic, df):
-    return 1-chi2.cdf(test_statistic, df)
-
-def test(lnL1, lnL2, delta_parameters):
-	test_stat = likelihood_ratio(lnL1, lnL2)
-	p = calculate_p(test_stat, delta_parameters)
-	return p
-
-@jit("float64(float64, int64)", nopython = True)
-def poisson(l, x):
-		p = exp(-l)
-		for i in range(1, x+1):
-			p = (p*l)/(i)
-		return p
-
-
-def recombination_rate(m, pi_vector,lambda_value, mu_value):
-	f = 0
-	for q in range(m+1):
-		for c in range(q+1):
-			f+= pi_vector[q]*(poisson(lambda_value, c))
-	return 0.5*(1-exp(-mu_value)*f)
-
-def generate_pi_vector(gamma_values):
-		'''
-		Generates the stationary distribution
-		'''
-		m = len(gamma_values) -1
-		pi_vector = numpy.zeros(m+1, numpy.float64)
-		denominator = 0.0
-		for q in range(m+1):
-			denominator += (q+1)*gamma_values[q]
-		for i in range(m+1):
-			nominator = 0.0
-			for q in range(i, m+1):
-				nominator += gamma_values[q]
-			pi_vector[i] = nominator/denominator
-		return pi_vector
-
-
-
-def generate_sample(probabilities, N):
-    probabilities = numpy.array(probabilities)
-    probabilities /= probabilities.sum()
-    sample = numpy.random.choice(len(probabilities), size=N, p=probabilities)
-    counts = numpy.bincount(sample, minlength=len(probabilities))
-    return counts
-
-
-def chi_squared(expected, observed):
-	return sum((expected-observed)**2/expected)
-
-def is_balanced(pattern, left_intervals_n, inversion_intervals_n):
-	return sum(pattern[left_intervals_n:left_intervals_n + inversion_intervals_n])%2 == 0
-	
-	
-
-@jit("f8[:,:](u8, u8, f8, f8, f8[:], f8[:,:])",nopython=True)
-def numba_generate_D(m, x, lambda_value, mu_value, gamma_values, g_values):
-	'''
-	Generates and returns a single D(x) matrix as defined in the paper.
-		
-	Arguments:
-	x: (int) the number of chiasma events
-	lambda_value/mu_value/g_value: see class Chromosome
-	'''
-	matrix = numpy.zeros((m+1,m+1), numpy.float64)
-	if lambda_value+mu_value != 0:
-		p1 = mu_value/(lambda_value+mu_value)
-		p2 = lambda_value/(lambda_value+mu_value)
-	else:
-		p1 = 0.0
-		p2 = 0.0
-	if x == 0:
-		for i in range(m+1):
-			for j in range(m+1):
-				if i>=j:
-					f = 1
-					for v in range(1,i-j+1):
-						f = f*v
-					matrix[i][j] = ((exp(-lambda_value)*lambda_value**(i-j))/f)*exp(-mu_value) #poisson(lambda_value, i-j)*exp(-mu_value)
-	else:
-		for i in range(m+1):
-			for j in range(m+1):
-				s = 0.0
-				for l in range(x):
-					for n in range(x-l-1, (x-l-1)*(m+1)+1):
-						for q in range(j, m+1):
-							h = i+1+l+n+q-j
-							to_add1 = g_values[n][x-l-1]*gamma_values[q]*exp(-(lambda_value+mu_value))*(p1**l)*(p2**(h-l))
-							for v in range(h):
-								to_add1 = to_add1 * (lambda_value + mu_value)
-							for v2 in range(1, l+1):
-								to_add1 = to_add1/v2
-							for v3 in range(1,h-l+1):
-								to_add1 = to_add1/v3
-							s += to_add1
-				if i>=j:
-					to_add2 = (exp(-mu_value))*(mu_value**x)*(exp(-lambda_value)*lambda_value ** (i-j) )
-					for v4 in range(1,x+1):
-						to_add2 = to_add2/v4
-					for v5 in range(1, i-j+1):
-						to_add2 = to_add2/v5
-					s += to_add2
-				matrix[i][j] = s
-		
-	return matrix
-
-
-class SterilityAndPatterns:
-	def __init__(self, sterility, pattern_probabilities_array, all_pattern_probabilities_array, all_patterns_order, all_data):
-		self.sterility = sterility
-		self.pattern_probabilities_array = pattern_probabilities_array
-		self.all_pattern_probabilites_array = all_pattern_probabilities_array
-		self.all_patterns_order = all_patterns_order
-		self.all_data = all_data
-
-		
-def fuse_patterns(outer_left_patterns, inner_left_patterns, inner_right_patterns, outer_right_patterns, pattern_order, data_dict, loci_to_remove):
-		pattern_probabilities_array = [0.0 for i in range(len(pattern_order))]
-		all_pattern_probabilities_dict = {}
-		all_patterns_order = []
-		all_pattern_probabilities = []
-		all_data = []
-		sterility = 0
-		calculator = Calculator()
-		for outer_left_pattern_reversed, outer_left_value in outer_left_patterns.items():
-			for inner_left_pattern, inner_left_value in inner_left_patterns.items():
-				for inner_right_pattern_reversed, inner_right_value in inner_right_patterns.items():
-					for outer_right_pattern, outer_right_value in outer_right_patterns.items():
-						outer_left_pattern = tuple(reversed(outer_left_pattern_reversed))
-						inner_right_pattern = tuple(reversed(inner_right_pattern_reversed))
-						balanced = (sum(inner_right_pattern) + sum(inner_left_pattern)) % 2 == 0
-						fused_probability = outer_left_value*inner_left_value*inner_right_value*outer_right_value
-						if not balanced:
-							sterility += fused_probability
-							fused_pattern = "unbalanced"
-						else:
-							full_pattern = outer_left_pattern + inner_left_pattern + inner_right_pattern + outer_right_pattern
-							fused_pattern = calculator.remove_loci(list(full_pattern), loci_to_remove)
-							if fused_pattern not in all_patterns_order:
-								all_patterns_order.append(fused_pattern)
-								all_pattern_probabilities.append(0.0)
-								if fused_pattern in data_dict:
-									all_data.append(data_dict[fused_pattern])
-								else:
-									all_data.append(0)
-							else:
-								ertert = 1
-							if fused_pattern not in all_pattern_probabilities_dict:
-								all_pattern_probabilities_dict[fused_pattern] = fused_probability
-							else:
-								all_pattern_probabilities_dict[fused_pattern] += fused_probability
-							if fused_pattern in pattern_order:
-								index = pattern_order.index(fused_pattern)
-								pattern_probabilities_array[index] += fused_probability
-							if fused_pattern in all_patterns_order:
-								index = all_patterns_order.index(fused_pattern)
-								all_pattern_probabilities[index] += fused_probability
-							else:
-								print("OH NO!S")
-							if balanced and fused_pattern != "unbalanced" and fused_pattern not in all_patterns_order:
-								print("Error! Pattern " + str(fused_pattern) + " not found!")
-								sys.exit(1)
-		if "unbalanced" in data_dict:
-			all_patterns_order.append("unbalanced")
-			all_pattern_probabilities.append(sterility)
-			all_data.append(data_dict["unbalanced"])
-		return SterilityAndPatterns(sterility, numpy.array(pattern_probabilities_array), numpy.array(all_pattern_probabilities), all_patterns_order, all_data)
-
-
-class CoincidenceFigure:
-	def __init__(self, title = ""):
-		self.coincidence_plots = []
-		self.title = title
-
-class CoincidencePlot:
-	def __init__(self, gamma_values, p, plot_marker = None):
-		self.gamma_values = gamma_values
-		self.p = p
-		self.h = self.calculate_h(p, gamma_values)
-		self.plot_marker = plot_marker
-
-	def get_sum(self, gamma_values):
-		gamma_sum = 0
-		for q in range(len(gamma_values)):
-			gamma_sum += (q+1)*gamma_values[q]
-		return gamma_sum
-
-	def calculate_h(self, p, gamma_values):
-		if p == 1:
-			return inf
-		else:
-			gamma_sum = self.get_sum(gamma_values)
-			return (p/gamma_sum)/(1-p)
-
-
-class ParametricBootstrap:
-	def __init__(self, loci, pattern_order, pattern_probabilities, N, identifier, parameter_estimates, estimate_likelihood, data, estimate_sterility, repeat = 50, replications = 100, interference_parameters = 1, interference_bounds = (0,15), seed = None, breakpoint_nonstationarity = False, stationary_test = False, different_breakpoint_interference=False, start_at = 0):
-		self.loci = loci
-		self.pattern_order = pattern_order
-		self.pattern_probabilities = pattern_probabilities
-		self.N = N
-		self.parameter_estimates = parameter_estimates
-		self.repeat = repeat
-		self.replications = 100
-		self.identifier = identifier
-		self.file_path = identifier + "/" + identifier
-		self.file_path_and_file = self.file_path + ".txt"
-		self.interference_parameters = interference_parameters
-		self.interference_bounds = interference_bounds
-		self.parameter_estimates = numpy.array(parameter_estimates)
-		self.bootstrap_estimates = [[] for i in range(len(parameter_estimates))]
-		self.stationary_test = stationary_test
-		self.different_breakpoint_interference = different_breakpoint_interference
-		self.test_statistics = []
-		self.log_likelihoods = []
-		self.sterilities = []
-		self.breakpoint_nonstationarity = breakpoint_nonstationarity
-		self.estimate_likelihood = estimate_likelihood
-		self.estimate_sterility = estimate_sterility
-		self.data = data
-		self.start_at = start_at
-		self.seed = seed
-		if not os.path.exists(identifier):
-			os.makedirs(identifier)
-	
-	def run(self):
-		nonzero_i = numpy.where(self.data != 0)
-		observed = self.data[nonzero_i]
-		expected = self.pattern_probabilities[nonzero_i]*self.N
-		self.estimate_test_statistic = self.get_test_statistic(expected, observed)
-		bigger = 0
-		if(self.file_path_and_file is not None):
-			with open(self.file_path_and_file, 'a+') as f:
-				f.write(str(list(self.data)) + "\t" + str(list(self.parameter_estimates)) + "\t" + str(self.estimate_sterility) + "\t" + str(self.estimate_likelihood) + "\t" + str(self.estimate_test_statistic) + "\n")
-				f.close()
-		for r in range(self.replications):
-			sample = self.resample(self.pattern_probabilities, self.N)
-			data = []
-			for c in range(len(sample)):
-				if sample[c] != 0 or self.pattern_order[c] == "unbalanced":
-					data.append(str(self.pattern_order[c]) + "\t" + str(sample[c]))
-			nonzero_i = numpy.where(sample != 0)
-			nonzero_sample = sample[nonzero_i]
-			stat_check = self.file_path + "_check" + str(r) + ".txt"
-			investigation = Investigation(self.loci, extra_pathway = False, interference_parameters=self.interference_parameters, interference_bounds=self.interference_bounds, alpha = 0, beta = 0, include_breakpoint_loci = False, include_patterns_in_report = True, include_all_patterns=True,  breakpoint_nonstationarity = self.breakpoint_nonstationarity, output_file = self.file_path +str(r)+".txt", statistic_check = stat_check, stationary_test=self.stationary_test, different_breakpoint_interference = self.different_breakpoint_interference, seed=self.seed)
-			investigation.read_input("", lines = data)
-			investigation.run_nelder_mead(repeat = self.repeat, verbose = True, report_frequency = 1000)
-			sterility = investigation.unbalanced_proportion
-			test_statistic = investigation.chisquare
-			self.log_likelihoods.append(investigation.loglikelihood)
-			self.sterilities.append(sterility)
-			# expected = self.N*investigation.best_patterns
-			# test_statistic = self.get_test_statistic(expected, sample)
-			if test_statistic > self.estimate_test_statistic:
-				bigger += 1
-			current_P = (bigger+1)/(r++1+1)
-			print("Current P estimate: " + str(current_P))
-			self.test_statistics.append(test_statistic)
-			if(self.file_path_and_file is not None):
-				with open(self.file_path_and_file, 'a+') as f:
-					f.write(str(list(sample)) + "\t" + str(list(investigation.parameter_estimates)) + "\t" + str(sterility) + "\t" + str(investigation.current_best) + "\t" + str(test_statistic) + "\n")
-					f.close()
-			for i in range(len(investigation.parameter_estimates)):
-				self.bootstrap_estimates[i].append(investigation.parameter_estimates[i])
-		self.P = (bigger + 1)/(self.replications +1)
-		outstring = "bootstrap: " + str(self.bootstrap_estimates) +"\nlog likelihoods: " + str(self.log_likelihoods) + "\nsterilities: " + str(self.sterilities) + "\ntest statistics: " + str(self.test_statistics) + "\nP: " + str(self.P)
-		if(self.file_path_and_file is not None):
-			with open(self.file_path_and_file, 'a+') as f:
-				f.write(outstring)
-				f.close()
-
-	def get_test_statistic(self, expected, observed):
-		if 0 in expected:
-			return inf
-		else:
-			return 2*sum(observed*numpy.log(observed/expected))
-		
-	def resample(self, prob, N):
-		prob = prob/prob.sum()
-		sample = numpy.random.choice(len(prob), size=N, p=prob)
-		counts = numpy.bincount(sample, minlength=len(prob))
-		return counts
-	
-
-
 class Investigation:
 	"""
 	A class for performing maximum likelihood parameter estimations on recombination and tetrad data.
@@ -1230,6 +934,304 @@ class Investigation:
 		best_evaluation = self.current_best
 		self.minus_log_likelihood(best_solution, final = True)
 		self.calculate_map(best_solution, best_evaluation, best = True)
+
+def AIC(lnL, variables):
+    return 2*variables -2*lnL
+
+def delta_AIC(delta_lnL, delta_variables):
+	return 2*delta_lnL -2*delta_variables
+
+def likelihood_ratio(lnL1, lnL2):
+	return -2*(lnL1-lnL2)
+
+def calculate_p(test_statistic, df):
+    return 1-chi2.cdf(test_statistic, df)
+
+def test(lnL1, lnL2, delta_parameters):
+	test_stat = likelihood_ratio(lnL1, lnL2)
+	p = calculate_p(test_stat, delta_parameters)
+	return p
+
+@jit("float64(float64, int64)", nopython = True)
+def poisson(l, x):
+		p = exp(-l)
+		for i in range(1, x+1):
+			p = (p*l)/(i)
+		return p
+
+
+def recombination_rate(m, pi_vector,lambda_value, mu_value):
+	f = 0
+	for q in range(m+1):
+		for c in range(q+1):
+			f+= pi_vector[q]*(poisson(lambda_value, c))
+	return 0.5*(1-exp(-mu_value)*f)
+
+def generate_pi_vector(gamma_values):
+		'''
+		Generates the stationary distribution
+		'''
+		m = len(gamma_values) -1
+		pi_vector = numpy.zeros(m+1, numpy.float64)
+		denominator = 0.0
+		for q in range(m+1):
+			denominator += (q+1)*gamma_values[q]
+		for i in range(m+1):
+			nominator = 0.0
+			for q in range(i, m+1):
+				nominator += gamma_values[q]
+			pi_vector[i] = nominator/denominator
+		return pi_vector
+
+
+
+def generate_sample(probabilities, N):
+    probabilities = numpy.array(probabilities)
+    probabilities /= probabilities.sum()
+    sample = numpy.random.choice(len(probabilities), size=N, p=probabilities)
+    counts = numpy.bincount(sample, minlength=len(probabilities))
+    return counts
+
+
+def chi_squared(expected, observed):
+	return sum((expected-observed)**2/expected)
+
+def is_balanced(pattern, left_intervals_n, inversion_intervals_n):
+	return sum(pattern[left_intervals_n:left_intervals_n + inversion_intervals_n])%2 == 0
+	
+	
+
+@jit("f8[:,:](u8, u8, f8, f8, f8[:], f8[:,:])",nopython=True)
+def numba_generate_D(m, x, lambda_value, mu_value, gamma_values, g_values):
+	'''
+	Generates and returns a single D(x) matrix as defined in the paper.
+		
+	Arguments:
+	x: (int) the number of chiasma events
+	lambda_value/mu_value/g_value: see class Chromosome
+	'''
+	matrix = numpy.zeros((m+1,m+1), numpy.float64)
+	if lambda_value+mu_value != 0:
+		p1 = mu_value/(lambda_value+mu_value)
+		p2 = lambda_value/(lambda_value+mu_value)
+	else:
+		p1 = 0.0
+		p2 = 0.0
+	if x == 0:
+		for i in range(m+1):
+			for j in range(m+1):
+				if i>=j:
+					f = 1
+					for v in range(1,i-j+1):
+						f = f*v
+					matrix[i][j] = ((exp(-lambda_value)*lambda_value**(i-j))/f)*exp(-mu_value) #poisson(lambda_value, i-j)*exp(-mu_value)
+	else:
+		for i in range(m+1):
+			for j in range(m+1):
+				s = 0.0
+				for l in range(x):
+					for n in range(x-l-1, (x-l-1)*(m+1)+1):
+						for q in range(j, m+1):
+							h = i+1+l+n+q-j
+							to_add1 = g_values[n][x-l-1]*gamma_values[q]*exp(-(lambda_value+mu_value))*(p1**l)*(p2**(h-l))
+							for v in range(h):
+								to_add1 = to_add1 * (lambda_value + mu_value)
+							for v2 in range(1, l+1):
+								to_add1 = to_add1/v2
+							for v3 in range(1,h-l+1):
+								to_add1 = to_add1/v3
+							s += to_add1
+				if i>=j:
+					to_add2 = (exp(-mu_value))*(mu_value**x)*(exp(-lambda_value)*lambda_value ** (i-j) )
+					for v4 in range(1,x+1):
+						to_add2 = to_add2/v4
+					for v5 in range(1, i-j+1):
+						to_add2 = to_add2/v5
+					s += to_add2
+				matrix[i][j] = s
+		
+	return matrix
+
+
+class SterilityAndPatterns:
+	def __init__(self, sterility, pattern_probabilities_array, all_pattern_probabilities_array, all_patterns_order, all_data):
+		self.sterility = sterility
+		self.pattern_probabilities_array = pattern_probabilities_array
+		self.all_pattern_probabilites_array = all_pattern_probabilities_array
+		self.all_patterns_order = all_patterns_order
+		self.all_data = all_data
+
+		
+def fuse_patterns(outer_left_patterns, inner_left_patterns, inner_right_patterns, outer_right_patterns, pattern_order, data_dict, loci_to_remove):
+		pattern_probabilities_array = [0.0 for i in range(len(pattern_order))]
+		all_pattern_probabilities_dict = {}
+		all_patterns_order = []
+		all_pattern_probabilities = []
+		all_data = []
+		sterility = 0
+		calculator = Calculator()
+		for outer_left_pattern_reversed, outer_left_value in outer_left_patterns.items():
+			for inner_left_pattern, inner_left_value in inner_left_patterns.items():
+				for inner_right_pattern_reversed, inner_right_value in inner_right_patterns.items():
+					for outer_right_pattern, outer_right_value in outer_right_patterns.items():
+						outer_left_pattern = tuple(reversed(outer_left_pattern_reversed))
+						inner_right_pattern = tuple(reversed(inner_right_pattern_reversed))
+						balanced = (sum(inner_right_pattern) + sum(inner_left_pattern)) % 2 == 0
+						fused_probability = outer_left_value*inner_left_value*inner_right_value*outer_right_value
+						if not balanced:
+							sterility += fused_probability
+							fused_pattern = "unbalanced"
+						else:
+							full_pattern = outer_left_pattern + inner_left_pattern + inner_right_pattern + outer_right_pattern
+							fused_pattern = calculator.remove_loci(list(full_pattern), loci_to_remove)
+							if fused_pattern not in all_patterns_order:
+								all_patterns_order.append(fused_pattern)
+								all_pattern_probabilities.append(0.0)
+								if fused_pattern in data_dict:
+									all_data.append(data_dict[fused_pattern])
+								else:
+									all_data.append(0)
+							else:
+								ertert = 1
+							if fused_pattern not in all_pattern_probabilities_dict:
+								all_pattern_probabilities_dict[fused_pattern] = fused_probability
+							else:
+								all_pattern_probabilities_dict[fused_pattern] += fused_probability
+							if fused_pattern in pattern_order:
+								index = pattern_order.index(fused_pattern)
+								pattern_probabilities_array[index] += fused_probability
+							if fused_pattern in all_patterns_order:
+								index = all_patterns_order.index(fused_pattern)
+								all_pattern_probabilities[index] += fused_probability
+							else:
+								print("OH NO!S")
+							if balanced and fused_pattern != "unbalanced" and fused_pattern not in all_patterns_order:
+								print("Error! Pattern " + str(fused_pattern) + " not found!")
+								sys.exit(1)
+		if "unbalanced" in data_dict:
+			all_patterns_order.append("unbalanced")
+			all_pattern_probabilities.append(sterility)
+			all_data.append(data_dict["unbalanced"])
+		return SterilityAndPatterns(sterility, numpy.array(pattern_probabilities_array), numpy.array(all_pattern_probabilities), all_patterns_order, all_data)
+
+
+class CoincidenceFigure:
+	def __init__(self, title = ""):
+		self.coincidence_plots = []
+		self.title = title
+
+class CoincidencePlot:
+	def __init__(self, gamma_values, p, plot_marker = None):
+		self.gamma_values = gamma_values
+		self.p = p
+		self.h = self.calculate_h(p, gamma_values)
+		self.plot_marker = plot_marker
+
+	def get_sum(self, gamma_values):
+		gamma_sum = 0
+		for q in range(len(gamma_values)):
+			gamma_sum += (q+1)*gamma_values[q]
+		return gamma_sum
+
+	def calculate_h(self, p, gamma_values):
+		if p == 1:
+			return inf
+		else:
+			gamma_sum = self.get_sum(gamma_values)
+			return (p/gamma_sum)/(1-p)
+
+
+class ParametricBootstrap:
+	def __init__(self, loci, pattern_order, pattern_probabilities, N, identifier, parameter_estimates, estimate_likelihood, data, estimate_sterility, repeat = 50, replications = 100, interference_parameters = 1, interference_bounds = (0,15), seed = None, breakpoint_nonstationarity = False, stationary_test = False, different_breakpoint_interference=False, start_at = 0):
+		self.loci = loci
+		self.pattern_order = pattern_order
+		self.pattern_probabilities = pattern_probabilities
+		self.N = N
+		self.parameter_estimates = parameter_estimates
+		self.repeat = repeat
+		self.replications = 100
+		self.identifier = identifier
+		self.file_path = identifier + "/" + identifier
+		self.file_path_and_file = self.file_path + ".txt"
+		self.interference_parameters = interference_parameters
+		self.interference_bounds = interference_bounds
+		self.parameter_estimates = numpy.array(parameter_estimates)
+		self.bootstrap_estimates = [[] for i in range(len(parameter_estimates))]
+		self.stationary_test = stationary_test
+		self.different_breakpoint_interference = different_breakpoint_interference
+		self.test_statistics = []
+		self.log_likelihoods = []
+		self.sterilities = []
+		self.breakpoint_nonstationarity = breakpoint_nonstationarity
+		self.estimate_likelihood = estimate_likelihood
+		self.estimate_sterility = estimate_sterility
+		self.data = data
+		self.start_at = start_at
+		self.seed = seed
+		if not os.path.exists(identifier):
+			os.makedirs(identifier)
+	
+	def run(self):
+		nonzero_i = numpy.where(self.data != 0)
+		observed = self.data[nonzero_i]
+		expected = self.pattern_probabilities[nonzero_i]*self.N
+		self.estimate_test_statistic = self.get_test_statistic(expected, observed)
+		bigger = 0
+		if(self.file_path_and_file is not None):
+			with open(self.file_path_and_file, 'a+') as f:
+				f.write(str(list(self.data)) + "\t" + str(list(self.parameter_estimates)) + "\t" + str(self.estimate_sterility) + "\t" + str(self.estimate_likelihood) + "\t" + str(self.estimate_test_statistic) + "\n")
+				f.close()
+		for r in range(self.replications):
+			sample = self.resample(self.pattern_probabilities, self.N)
+			data = []
+			for c in range(len(sample)):
+				if sample[c] != 0 or self.pattern_order[c] == "unbalanced":
+					data.append(str(self.pattern_order[c]) + "\t" + str(sample[c]))
+			nonzero_i = numpy.where(sample != 0)
+			nonzero_sample = sample[nonzero_i]
+			stat_check = self.file_path + "_check" + str(r) + ".txt"
+			investigation = Investigation(self.loci, extra_pathway = False, interference_parameters=self.interference_parameters, interference_bounds=self.interference_bounds, alpha = 0, beta = 0, include_breakpoint_loci = False, include_patterns_in_report = True, include_all_patterns=True,  breakpoint_nonstationarity = self.breakpoint_nonstationarity, output_file = self.file_path +str(r)+".txt", statistic_check = stat_check, stationary_test=self.stationary_test, different_breakpoint_interference = self.different_breakpoint_interference, seed=self.seed)
+			investigation.read_input("", lines = data)
+			investigation.run_nelder_mead(repeat = self.repeat, verbose = True, report_frequency = 1000)
+			sterility = investigation.unbalanced_proportion
+			test_statistic = investigation.chisquare
+			self.log_likelihoods.append(investigation.loglikelihood)
+			self.sterilities.append(sterility)
+			# expected = self.N*investigation.best_patterns
+			# test_statistic = self.get_test_statistic(expected, sample)
+			if test_statistic > self.estimate_test_statistic:
+				bigger += 1
+			current_P = (bigger+1)/(r++1+1)
+			print("Current P estimate: " + str(current_P))
+			self.test_statistics.append(test_statistic)
+			if(self.file_path_and_file is not None):
+				with open(self.file_path_and_file, 'a+') as f:
+					f.write(str(list(sample)) + "\t" + str(list(investigation.parameter_estimates)) + "\t" + str(sterility) + "\t" + str(investigation.current_best) + "\t" + str(test_statistic) + "\n")
+					f.close()
+			for i in range(len(investigation.parameter_estimates)):
+				self.bootstrap_estimates[i].append(investigation.parameter_estimates[i])
+		self.P = (bigger + 1)/(self.replications +1)
+		outstring = "bootstrap: " + str(self.bootstrap_estimates) +"\nlog likelihoods: " + str(self.log_likelihoods) + "\nsterilities: " + str(self.sterilities) + "\ntest statistics: " + str(self.test_statistics) + "\nP: " + str(self.P)
+		if(self.file_path_and_file is not None):
+			with open(self.file_path_and_file, 'a+') as f:
+				f.write(outstring)
+				f.close()
+
+	def get_test_statistic(self, expected, observed):
+		if 0 in expected:
+			return inf
+		else:
+			return 2*sum(observed*numpy.log(observed/expected))
+		
+	def resample(self, prob, N):
+		prob = prob/prob.sum()
+		sample = numpy.random.choice(len(prob), size=N, p=prob)
+		counts = numpy.bincount(sample, minlength=len(prob))
+		return counts
+	
+
+
+
 	
 	
 
